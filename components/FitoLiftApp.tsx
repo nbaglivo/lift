@@ -122,15 +122,6 @@ export function FitoLiftApp() {
     replaceRoutine(uid, norm).catch(console.error)
   }, [uid])
 
-  const handleReset = useCallback(() => {
-    if (!confirm('Reset all logged data and return to the empty state?')) return
-    clearState()
-    setRows([])
-    setDay(null)
-    setWeek(null)
-    clearRoutine(uid).catch(console.error)
-  }, [uid])
-
   const handleExport = useCallback(() => {
     if (!rows?.length) return
     const slug = (month || 'routine').replace(/\s+/g, '-').toLowerCase()

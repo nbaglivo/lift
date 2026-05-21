@@ -73,7 +73,7 @@ export function Session({
     <div className="page">
       <header className="mast">
         <div className="title">
-          Bitácora <em>· {month}</em>
+          Lift <em>· {month}</em>
         </div>
         <div className="meta progress-tally">
           <b>{String(doneEx).padStart(2, '0')}</b>&thinsp;/&thinsp;{String(totalEx).padStart(2, '0')}
