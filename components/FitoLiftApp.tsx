@@ -1,9 +1,16 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { exKey, exportToCsv, parseCsv, parseDay, parseFile, rowKey } from '@/lib/csv'
 import { clearState, loadState, saveState } from '@/lib/storage'
+import { getDeviceId } from '@/lib/identity'
 import { SAMPLE_CSV } from '@/data/sampleRoutine'
+import {
+  clearRoutine,
+  getRoutine,
+  replaceRoutine,
+  updateRowFields,
+} from '@/app/actions'
 import type { DayInfo, Row } from '@/types/routine'
 import { EmptyState } from './EmptyState'
 import { Session } from './Session'
@@ -13,21 +20,57 @@ export function FitoLiftApp() {
   const [day, setDay] = useState<string | null>(null)
   const [week, setWeek] = useState<string | null>(null)
   const [openEx, setOpenEx] = useState<string | null>(null)
+  const deviceId = useRef<string | null>(null)
 
+  // Load: DB is authoritative; migrate from localStorage if DB is empty
   useEffect(() => {
-    const stored = loadState()
-    if (stored) {
-      setRows(stored.rows)
-      setDay(stored.day)
-      setWeek(stored.week ?? '1')
-      return
-    }
-    const norm = parseCsv(SAMPLE_CSV)
-    setRows(norm)
-    setDay(norm[0]?.day ?? null)
-    setWeek('1')
+    const id = getDeviceId()
+    deviceId.current = id
+
+    getRoutine(id).then((dbRows) => {
+      if (dbRows.length > 0) {
+        // DB has data — use it as source of truth
+        const stored = loadState()
+        setRows(dbRows)
+        setDay(stored?.day ?? dbRows[0]?.day ?? null)
+        setWeek(stored?.week ?? '1')
+        saveState({ rows: dbRows, day: stored?.day ?? dbRows[0]?.day ?? null, week: stored?.week ?? '1' })
+        return
+      }
+
+      // DB is empty — check localStorage for existing data to migrate
+      const stored = loadState()
+      if (stored?.rows.length) {
+        setRows(stored.rows)
+        setDay(stored.day)
+        setWeek(stored.week ?? '1')
+        replaceRoutine(id, stored.rows).catch(console.error)
+        return
+      }
+
+      // Nothing anywhere — load the sample
+      const norm = parseCsv(SAMPLE_CSV)
+      setRows(norm)
+      setDay(norm[0]?.day ?? null)
+      setWeek('1')
+      replaceRoutine(id, norm).catch(console.error)
+    }).catch(() => {
+      // DB unreachable — fall back to localStorage
+      const stored = loadState()
+      if (stored?.rows.length) {
+        setRows(stored.rows)
+        setDay(stored.day)
+        setWeek(stored.week ?? '1')
+      } else {
+        const norm = parseCsv(SAMPLE_CSV)
+        setRows(norm)
+        setDay(norm[0]?.day ?? null)
+        setWeek('1')
+      }
+    })
   }, [])
 
+  // Keep localStorage cache in sync
   useEffect(() => {
     if (rows === null) return
     saveState({ rows, day, week })
@@ -54,8 +97,22 @@ export function FitoLiftApp() {
 
   const month = rows?.[0]?.month ?? ''
 
+  // rowsRef lets updateRow fire server actions without stale-closure issues
+  const rowsRef = useRef<Row[] | null>(null)
+  rowsRef.current = rows
+
   const updateRow = useCallback((key: string, patch: Partial<Row>) => {
     setRows((prev) => prev?.map((r) => (rowKey(r) === key ? { ...r, ...patch } : r)) ?? null)
+    if (deviceId.current) {
+      const syncPatch = {
+        ...(patch.peso !== undefined ? { peso: patch.peso } : {}),
+        ...(patch.dificultad !== undefined ? { dificultad: patch.dificultad } : {}),
+        ...(patch.done !== undefined ? { done: patch.done } : {}),
+      } as Pick<Row, 'peso' | 'dificultad' | 'done'>
+      if (Object.keys(syncPatch).length > 0) {
+        updateRowFields(deviceId.current, key, syncPatch).catch(console.error)
+      }
+    }
   }, [])
 
   const handleUpload = useCallback(async (file: File) => {
@@ -63,6 +120,7 @@ export function FitoLiftApp() {
     setRows(norm)
     setDay(norm[0]?.day ?? null)
     setWeek('1')
+    if (deviceId.current) replaceRoutine(deviceId.current, norm).catch(console.error)
   }, [])
 
   const handleLoadSample = useCallback(() => {
@@ -70,6 +128,7 @@ export function FitoLiftApp() {
     setRows(norm)
     setDay(norm[0]?.day ?? null)
     setWeek('1')
+    if (deviceId.current) replaceRoutine(deviceId.current, norm).catch(console.error)
   }, [])
 
   const handleReset = useCallback(() => {
@@ -78,6 +137,7 @@ export function FitoLiftApp() {
     setRows([])
     setDay(null)
     setWeek(null)
+    if (deviceId.current) clearRoutine(deviceId.current).catch(console.error)
   }, [])
 
   const handleExport = useCallback(() => {
@@ -86,17 +146,6 @@ export function FitoLiftApp() {
     exportToCsv(rows, `${slug}.csv`)
   }, [rows, month])
 
-  const handleToggleEx = useCallback(
-    (key: string | null) => {
-      setOpenEx((prev) => {
-        if (key === null) return null
-        return prev === key ? null : key
-      })
-    },
-    [],
-  )
-
-  // group-aware toggle: uses exKey, not rowKey
   const handleToggleExByExKey = useCallback(
     (ek: string) => {
       setOpenEx((prev) => (prev === ek ? null : ek))
